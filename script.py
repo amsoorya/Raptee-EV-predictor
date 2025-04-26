@@ -5,7 +5,6 @@ import numpy as np
 import requests
 import folium
 from streamlit_folium import folium_static
-from geopy.geocoders import Nominatim
 
 # Define GRU Model
 class GRUModel(nn.Module):
@@ -33,10 +32,20 @@ model = GRUModel(input_dim=input_dim, hidden_size=hidden_size, num_layers=num_la
 model.load_state_dict(checkpoint["model_state_dict"])
 model.eval()
 
+# Get coordinates using Open-Meteo API
 def get_coordinates(place_name):
-    geolocator = Nominatim(user_agent="ev_energy_app")
-    location = geolocator.geocode(place_name)
-    return (location.latitude, location.longitude) if location else (None, None)
+    url = f"https://geocoding-api.open-meteo.com/v1/search?name={place_name}&count=1&language=en&format=json"
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if "results" in data and data["results"]:
+                location = data["results"][0]
+                return location["latitude"], location["longitude"]
+        return None, None
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching coordinates: {e}")
+        return None, None
 
 def get_elevation(lat, lon):
     try:
@@ -104,24 +113,23 @@ if st.button("Fetch Coordinates and Elevations"):
             
             for i, route in enumerate(best_routes):
                 distance = route['distance'] / 1000  # Convert to km
-                trip_time_length = distance / speed * 60  # Approximate trip time in minutes
+                trip_time_length = distance / speed * 60
                 
                 road_type = [int(city), int(motor_way), int(country_roads)]
                 input_features = torch.tensor([[
                     time_of_day, day_of_the_week, origin_elevation, destination_elevation, elevation_difference, speed, current, total_voltage,
                     max_cell_temp, min_cell_temp, trip_time_length, power_kw, odometer, quantity_kwh, *road_type,
                     driving_style, ecr_deviation, distance, temperature, percentage, charging_time, charge_energy
-                ]], dtype=torch.float32).unsqueeze(0)
+                ]], dtype=torch.float32).unsqueeze(0)  # Fix input shape
                 
                 with torch.no_grad():
-                    prediction = model(input_features).item()
+                    predicted_consumption = model(input_features).item()
                 
-                st.write(f"Route {i+1}: {distance:.2f} km, Predicted Consumption: {prediction:.2f} kWh/100km")
+                st.write(f"Route {i+1}: {distance:.2f} km, Predicted Consumption: {predicted_consumption:.2f} kWh")
                 
-                # Fix: Swap coordinates from (lon, lat) to (lat, lon) for correct plotting
                 route_coords = [(lat, lon) for lon, lat in route['geometry']['coordinates']]
                 folium.PolyLine(route_coords, color=colors[i % len(colors)], weight=5, opacity=0.7).add_to(m)
-
+            
             folium_static(m)
     else:
         st.error("Could not fetch coordinates. Please check the place names.")
